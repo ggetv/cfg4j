@@ -26,10 +26,14 @@ import org.cfg4j.source.context.propertiesprovider.PropertiesProvider;
 import org.cfg4j.source.context.propertiesprovider.PropertiesProviderSelector;
 import org.cfg4j.utils.FileUtils;
 import org.eclipse.jgit.api.CheckoutCommand;
+import org.eclipse.jgit.api.CloneCommand;
 import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.PullCommand;
+import org.eclipse.jgit.api.TransportConfigCallback;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.transport.CredentialsProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,6 +46,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.StringJoiner;
 
 /**
  * Note: use {@link GitConfigurationSourceBuilder} for building instances of this class.
@@ -62,26 +67,42 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
   private Git clonedRepo;
   private Path clonedRepoPath;
   private boolean initialized;
+  private CredentialsProvider credentialsProvider;
+  private TransportConfigCallback transportConfigCallback;
 
   /**
    * Note: use {@link GitConfigurationSourceBuilder} for building instances of this class.
    * <p>
-   * Read configuration from the remote GIT repository residing at {@code repositoryURI}. Keeps a local
-   * clone of the repository in the {@code tmpRepoPrefix} directory under {@code tmpPath} path.
-   * Uses provided {@code branchResolver} and {@code pathResolver} for branch and path resolution.
+   * Read configuration from the remote GIT repository residing at {@code repositoryURI}. Keeps a
+   * local clone of the repository in the {@code tmpRepoPrefix} directory under {@code tmpPath}
+   * path. Uses provided {@code branchResolver} and {@code pathResolver} for branch and path
+   * resolution.
    *
-   * @param repositoryURI              URI to the remote git repository
-   * @param tmpPath                    path to the tmp directory
-   * @param tmpRepoPrefix              prefix for the name of the local directory keeping the repository clone
-   * @param branchResolver             {@link BranchResolver} used for extracting git branch from an {@link Environment}
-   * @param pathResolver               {@link PathResolver} used for extracting git path from an {@link Environment}
-   * @param configFilesProvider        {@link ConfigFilesProvider} used for determining which files in repository should be read
-   * @param propertiesProviderSelector selector used for choosing {@link PropertiesProvider} based on a configuration file extension
-   *                                   as config files
+   * @param repositoryURI URI to the remote git repository
+   * @param tmpPath path to the tmp directory
+   * @param tmpRepoPrefix prefix for the name of the local directory keeping the repository clone
+   * @param branchResolver {@link BranchResolver} used for extracting git branch from an {@link
+   * Environment}
+   * @param pathResolver {@link PathResolver} used for extracting git path from an {@link
+   * Environment}
+   * @param configFilesProvider {@link ConfigFilesProvider} used for determining which files in
+   * repository should be read
+   * @param propertiesProviderSelector selector used for choosing {@link PropertiesProvider} based
+   * on a configuration file extension as config files
+   * @param credentialsProvider {@link CredentialsProvider} used to customize credentials provider
+   * @param transportConfigCallback {@link TransportConfigCallback} used for using ssh private key
+   * at .ssh/id_rsa
    */
-  GitConfigurationSource(String repositoryURI, Path tmpPath, String tmpRepoPrefix, BranchResolver branchResolver,
-                         PathResolver pathResolver, ConfigFilesProvider configFilesProvider,
-                         PropertiesProviderSelector propertiesProviderSelector) {
+  GitConfigurationSource(String repositoryURI,
+    Path tmpPath,
+    String tmpRepoPrefix,
+    BranchResolver branchResolver,
+    PathResolver pathResolver,
+    ConfigFilesProvider configFilesProvider,
+    PropertiesProviderSelector propertiesProviderSelector,
+    CredentialsProvider credentialsProvider,
+    TransportConfigCallback transportConfigCallback) {
+
     this.branchResolver = requireNonNull(branchResolver);
     this.pathResolver = requireNonNull(pathResolver);
     this.configFilesProvider = requireNonNull(configFilesProvider);
@@ -89,6 +110,8 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
     this.repositoryURI = requireNonNull(repositoryURI);
     this.tmpPath = requireNonNull(tmpPath);
     this.tmpRepoPrefix = requireNonNull(tmpRepoPrefix);
+    this.credentialsProvider = credentialsProvider;
+    this.transportConfigCallback = transportConfigCallback;
 
     initialized = false;
   }
@@ -96,7 +119,8 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
   @Override
   public Properties getConfiguration(Environment environment) {
     if (!initialized) {
-      throw new IllegalStateException("Configuration source has to be successfully initialized before you request configuration.");
+      throw new IllegalStateException(
+        "Configuration source has to be successfully initialized before you request configuration.");
     }
 
     reload();
@@ -117,11 +141,13 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
     for (Path path : paths) {
       try (InputStream input = new FileInputStream(path.toFile())) {
 
-        PropertiesProvider provider = propertiesProviderSelector.getProvider(path.getFileName().toString());
+        PropertiesProvider provider = propertiesProviderSelector
+          .getProvider(path.getFileName().toString());
         properties.putAll(provider.getProperties(input));
 
       } catch (IOException e) {
-        throw new IllegalStateException("Unable to load configuration from " + path.toString() + " file", e);
+        throw new IllegalStateException(
+          "Unable to load configuration from " + path.toString() + " file", e);
       }
     }
 
@@ -129,7 +155,7 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
   }
 
   /**
-   * @throws IllegalStateException        when unable to create directories for local repo clone
+   * @throws IllegalStateException when unable to create directories for local repo clone
    * @throws SourceCommunicationException when unable to clone repository
    */
   @Override
@@ -141,14 +167,21 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
       // This folder can't exist or JGit will throw NPE on clone
       Files.delete(clonedRepoPath);
     } catch (IOException e) {
-      throw new IllegalStateException("Unable to create local clone directory: " + tmpRepoPrefix, e);
+      throw new IllegalStateException("Unable to create local clone directory: " + tmpRepoPrefix,
+        e);
     }
 
     try {
-      clonedRepo = Git.cloneRepository()
-          .setURI(repositoryURI)
-          .setDirectory(clonedRepoPath.toFile())
-          .call();
+      CloneCommand cloneCommand = Git.cloneRepository()
+        .setURI(repositoryURI)
+        .setDirectory(clonedRepoPath.toFile());
+
+      if (transportConfigCallback != null) {
+        cloneCommand.setTransportConfigCallback(transportConfigCallback);
+      }
+
+      clonedRepo = cloneCommand.call();
+
     } catch (GitAPIException e) {
       throw new SourceCommunicationException("Unable to clone repository: " + repositoryURI, e);
     }
@@ -159,7 +192,11 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
   private void reload() {
     try {
       LOG.debug("Reloading configuration by pulling changes");
-      clonedRepo.pull().call();
+      PullCommand pullCommand = clonedRepo.pull();
+      if (transportConfigCallback != null) {
+        pullCommand.setTransportConfigCallback(transportConfigCallback);
+      }
+      pullCommand.call();
     } catch (GitAPIException e) {
       initialized = false;
       throw new IllegalStateException("Unable to pull from remote repository", e);
@@ -177,19 +214,18 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
 
   private void checkoutToBranch(String branch) throws GitAPIException {
     CheckoutCommand checkoutCommand = clonedRepo.checkout()
-        .setCreateBranch(false)
-        .setName(branch);
+      .setCreateBranch(false)
+      .setName(branch);
 
     List<Ref> refList = clonedRepo.branchList().call();
     if (!anyRefMatches(refList, branch)) {
       checkoutCommand = checkoutCommand
-          .setCreateBranch(true)
-          .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
-          .setStartPoint("origin/" + branch);
+        .setCreateBranch(true)
+        .setUpstreamMode(CreateBranchCommand.SetupUpstreamMode.TRACK)
+        .setStartPoint("origin/" + branch);
     }
 
-    checkoutCommand
-        .call();
+    checkoutCommand.call();
   }
 
   private boolean anyRefMatches(List<Ref> refList, String branch) {
@@ -204,12 +240,19 @@ class GitConfigurationSource implements ConfigurationSource, Closeable {
 
   @Override
   public String toString() {
-    return "GitConfigurationSource{" +
-        "clonedRepo=" + clonedRepo +
-        ", clonedRepoPath=" + clonedRepoPath +
-        ", branchResolver=" + branchResolver +
-        ", pathResolver=" + pathResolver +
-        ", configFilesProvider=" + configFilesProvider +
-        '}';
+    return new StringJoiner(", ", GitConfigurationSource.class.getSimpleName() + "[", "]")
+      .add("branchResolver=" + branchResolver)
+      .add("pathResolver=" + pathResolver)
+      .add("configFilesProvider=" + configFilesProvider)
+      .add("propertiesProviderSelector=" + propertiesProviderSelector)
+      .add("repositoryURI='" + repositoryURI + "'")
+      .add("tmpPath=" + tmpPath)
+      .add("tmpRepoPrefix='" + tmpRepoPrefix + "'")
+      .add("clonedRepo=" + clonedRepo)
+      .add("clonedRepoPath=" + clonedRepoPath)
+      .add("initialized=" + initialized)
+      .add("credentialsProvider=" + credentialsProvider)
+      .add("transportConfigCallback=" + transportConfigCallback)
+      .toString();
   }
 }

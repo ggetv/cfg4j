@@ -15,15 +15,23 @@
  */
 package org.cfg4j.source.git;
 
+import com.jcraft.jsch.Session;
 import org.cfg4j.source.context.filesprovider.ConfigFilesProvider;
 import org.cfg4j.source.context.filesprovider.DefaultConfigFilesProvider;
 import org.cfg4j.source.context.propertiesprovider.JsonBasedPropertiesProvider;
 import org.cfg4j.source.context.propertiesprovider.PropertiesProviderSelector;
 import org.cfg4j.source.context.propertiesprovider.PropertyBasedPropertiesProvider;
 import org.cfg4j.source.context.propertiesprovider.YamlBasedPropertiesProvider;
+import org.eclipse.jgit.api.TransportConfigCallback;
+import org.eclipse.jgit.transport.CredentialsProvider;
+import org.eclipse.jgit.transport.JschConfigSessionFactory;
+import org.eclipse.jgit.transport.OpenSshConfig.Host;
+import org.eclipse.jgit.transport.SshTransport;
+import org.eclipse.jgit.transport.Transport;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.StringJoiner;
 
 /**
  * Builder for {@link GitConfigurationSource}.
@@ -37,6 +45,8 @@ public class GitConfigurationSourceBuilder {
   private String tmpRepoPrefix;
   private ConfigFilesProvider configFilesProvider;
   private PropertiesProviderSelector propertiesProviderSelector;
+  private CredentialsProvider credentialsProvider;
+  private TransportConfigCallback transportConfigCallback;
 
   /**
    * Construct {@link GitConfigurationSource}s builder
@@ -59,7 +69,9 @@ public class GitConfigurationSourceBuilder {
     tmpRepoPrefix = "cfg4j-git-config-repository";
     configFilesProvider = new DefaultConfigFilesProvider();
     propertiesProviderSelector = new PropertiesProviderSelector(
-        new PropertyBasedPropertiesProvider(), new YamlBasedPropertiesProvider(), new JsonBasedPropertiesProvider()
+      new PropertyBasedPropertiesProvider(),
+      new YamlBasedPropertiesProvider(),
+      new JsonBasedPropertiesProvider()
     );
   }
 
@@ -130,24 +142,62 @@ public class GitConfigurationSourceBuilder {
   }
 
   /**
+   * Set {@link CredentialsProvider} for {@link GitConfigurationSource} built by this builder
+   *
+   * @param credentialsProvider {@link CredentialsProvider} to use
+   * @return this builder after {@code credentialsProvider} is set
+   */
+  public GitConfigurationSourceBuilder withCredentialsProvider(CredentialsProvider credentialsProvider) {
+    this.credentialsProvider = credentialsProvider;
+    return this;
+  }
+
+  /**
+   * When using with ssh transport, use {@code ~/.ssh/id_rsa} for auth.
+   *
+   * @return this builder with ssh transport set
+   */
+  public GitConfigurationSourceBuilder withDefaultSshKeys() {
+    this.transportConfigCallback = transport -> ((SshTransport) transport).setSshSessionFactory(new JschConfigSessionFactory() {
+      @Override
+      protected void configure(Host hc, Session session) {
+        // do nothing
+      }
+    });
+
+    return this;
+  }
+
+  /**
    * Build a {@link GitConfigurationSource} using this builder's configuration
    *
    * @return new {@link GitConfigurationSource}
    */
   public GitConfigurationSource build() {
-    return new GitConfigurationSource(repositoryURI, tmpPath, tmpRepoPrefix, branchResolver, pathResolver,
-        configFilesProvider, propertiesProviderSelector);
+    return new GitConfigurationSource(repositoryURI,
+      tmpPath,
+      tmpRepoPrefix,
+      branchResolver,
+      pathResolver,
+      configFilesProvider,
+      propertiesProviderSelector,
+      credentialsProvider,
+      transportConfigCallback);
   }
 
   @Override
   public String toString() {
-    return "GitConfigurationSourceBuilder{" +
-        "branchResolver=" + branchResolver +
-        ", pathResolver=" + pathResolver +
-        ", repositoryURI='" + repositoryURI + '\'' +
-        ", tmpPath='" + tmpPath + '\'' +
-        ", tmpRepoPrefix='" + tmpRepoPrefix + '\'' +
-        ", configFilesProvider=" + configFilesProvider +
-        '}';
+    return new StringJoiner(", ", GitConfigurationSourceBuilder.class.getSimpleName() + "[",
+      "]")
+      .add("branchResolver=" + branchResolver)
+      .add("pathResolver=" + pathResolver)
+      .add("repositoryURI='" + repositoryURI + "'")
+      .add("tmpPath=" + tmpPath)
+      .add("tmpRepoPrefix='" + tmpRepoPrefix + "'")
+      .add("configFilesProvider=" + configFilesProvider)
+      .add("propertiesProviderSelector=" + propertiesProviderSelector)
+      .add("credentialsProvider=" + credentialsProvider)
+      .add("transportConfigCallback=" + transportConfigCallback)
+      .toString();
   }
 }
