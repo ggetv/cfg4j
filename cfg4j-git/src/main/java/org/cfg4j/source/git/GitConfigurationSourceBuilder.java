@@ -15,7 +15,10 @@
  */
 package org.cfg4j.source.git;
 
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.Session;
+import com.jcraft.jsch.UserInfo;
 import org.cfg4j.source.context.filesprovider.ConfigFilesProvider;
 import org.cfg4j.source.context.filesprovider.DefaultConfigFilesProvider;
 import org.cfg4j.source.context.propertiesprovider.JsonBasedPropertiesProvider;
@@ -26,8 +29,10 @@ import org.eclipse.jgit.api.TransportConfigCallback;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.JschConfigSessionFactory;
 import org.eclipse.jgit.transport.OpenSshConfig.Host;
+import org.eclipse.jgit.transport.SshSessionFactory;
 import org.eclipse.jgit.transport.SshTransport;
 import org.eclipse.jgit.transport.Transport;
+import org.eclipse.jgit.util.FS;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -161,7 +166,21 @@ public class GitConfigurationSourceBuilder {
     this.transportConfigCallback = transport -> ((SshTransport) transport).setSshSessionFactory(new JschConfigSessionFactory() {
       @Override
       protected void configure(Host hc, Session session) {
-        // do nothing
+        // set StrictHostKeyChecking to no, otherwise will get org.eclipse.jgit.api.errors.transportexception UnknownHostKey error
+        session.setConfig("StrictHostKeyChecking", "no");
+      }
+
+      @Override
+      protected JSch getJSch(Host hc, FS fs) throws JSchException {
+        String userHome = System.getProperty("user.home");
+        String privateKeyPath = userHome + "/.ssh/id_rsa";
+        String knownHostsPath = userHome + "/.ssh/knownhosts";
+        JSch jSch = super.getJSch(hc, fs);
+        jSch.removeAllIdentity();
+        jSch.addIdentity(privateKeyPath);
+        jSch.setKnownHosts(knownHostsPath);
+//        jSch.setConfig("StrictHostKeyChecking", "no");
+        return jSch;
       }
     });
 
