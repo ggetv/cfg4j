@@ -163,26 +163,57 @@ public class GitConfigurationSourceBuilder {
    * @return this builder with ssh transport set
    */
   public GitConfigurationSourceBuilder withDefaultSshKeys() {
-    this.transportConfigCallback = transport -> ((SshTransport) transport).setSshSessionFactory(new JschConfigSessionFactory() {
-      @Override
-      protected void configure(Host hc, Session session) {
-        // set StrictHostKeyChecking to no, otherwise will get org.eclipse.jgit.api.errors.transportexception UnknownHostKey error
-        session.setConfig("StrictHostKeyChecking", "no");
-      }
+    this.transportConfigCallback = transport -> ((SshTransport) transport).setSshSessionFactory(
+      new JschConfigSessionFactory() {
+        @Override
+        protected void configure(Host hc, Session session) {
+          // set StrictHostKeyChecking to no, otherwise will get org.eclipse.jgit.api.errors.transportexception UnknownHostKey error
+          session.setConfig("StrictHostKeyChecking", "no");
+          session.setUserInfo(new UserInfo() {
+            @Override
+            public String getPassphrase() {
+              return "<your pass phrase>"; // if you don't have passphrase, return null
+            }
 
-      @Override
-      protected JSch getJSch(Host hc, FS fs) throws JSchException {
-        String userHome = System.getProperty("user.home");
-        String privateKeyPath = userHome + "/.ssh/id_rsa";
-        String knownHostsPath = userHome + "/.ssh/knownhosts";
-        JSch jSch = super.getJSch(hc, fs);
-        jSch.removeAllIdentity();
-        jSch.addIdentity(privateKeyPath);
-        jSch.setKnownHosts(knownHostsPath);
-//        jSch.setConfig("StrictHostKeyChecking", "no");
-        return jSch;
-      }
-    });
+            @Override
+            public String getPassword() {
+              return null;
+            }
+
+            @Override
+            public boolean promptPassword(String s) {
+              return false;
+            }
+
+            @Override
+            public boolean promptPassphrase(String s) {
+              return true; // if you don't have passphrase set, return false
+            }
+
+            @Override
+            public boolean promptYesNo(String s) {
+              return false;
+            }
+
+            @Override
+            public void showMessage(String s) {
+
+            }
+          });
+        }
+
+        @Override
+        protected JSch getJSch(Host hc, FS fs) throws JSchException {
+          String userHome = System.getProperty("user.home");
+          String privateKeyPath = userHome + "/.ssh/id_rsa";
+          String knownHostsPath = userHome + "/.ssh/known_hosts";
+          JSch jSch = super.getJSch(hc, fs);
+          jSch.removeAllIdentity();
+          jSch.addIdentity(privateKeyPath);
+          jSch.setKnownHosts(knownHostsPath);
+          return jSch;
+        }
+      });
 
     return this;
   }
